@@ -2,6 +2,7 @@ import numpy as np
 from tqdm import tqdm
 from scipy.io import wavfile
 import os, csv
+import librosa
 
 # DATA LOADING - LOAD FILE LISTS
 def load_full_data_list(datafolder='dataset'):#check change path names
@@ -13,7 +14,7 @@ def load_full_data_list(datafolder='dataset'):#check change path names
         dataset[setname] = {}
         datafolders[setname] = datafolder + '/' + setname + 'set'
 
-    print "Loading files..."
+    print("Loading files...")
     for setname in sets:
         foldername = datafolders[setname]
 
@@ -65,7 +66,7 @@ def load_noisy_data_list(valfolder = ''):#check change path names
     dataset = {'val': {}}
     datafolders = {'val': valfolder}
 
-    print "Loading files..."
+    print("Loading files...")
     for setname in sets:
         foldername = datafolders[setname]
 
@@ -99,6 +100,25 @@ def load_noisy_data(valset):
                 inputData = np.reshape(inputData, [1, 1, shape[0], shape[1]])
 
                 dataset['inaudio'][id]  = np.float32(inputData)
+
+    return valset
+
+def load_noisy_data_librosa(valset):
+
+    for dataset in [valset]:
+
+        dataset['inaudio']  = [None]*len(dataset['innames'])
+
+        for id in tqdm(range(len(dataset['innames']))):
+
+            if dataset['inaudio'][id] is None:
+                inputData, fs = librosa.core.load(dataset['innames'][id], sr=16000, mono=True) # dtype=np.float32
+                inputData  = np.reshape(inputData, [-1, 1])
+                shape = np.shape(inputData)
+                inputData = np.reshape(inputData, [1, 1, shape[0], shape[1]])
+
+#                 dataset['inaudio'][id]  = np.float32(inputData)
+                dataset['inaudio'][id]  = inputData
 
     return valset
 

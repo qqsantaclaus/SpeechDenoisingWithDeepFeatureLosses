@@ -2,10 +2,10 @@ from model import *
 from data_import import *
 
 import sys, getopt
+import soundfile as sf
 
-valfolder = "dataset/valset_noisy"
 modfolder = "models"
-
+output_path = "sim_denoised"
 try:
     opts, args = getopt.getopt(sys.argv[1:],"hd:m:",["ifolder=,modelfolder="])
 except getopt.GetoptError:
@@ -15,18 +15,10 @@ for opt, arg in opts:
     if opt == '-h':
         print('Usage: pythonsenet_infer.py -d <inputfolder> -m <modelfolder>')
         sys.exit()
-    elif opt in ("-d", "--inputfolder"):
-        valfolder = arg
     elif opt in ("-m", "--modelfolder"):
         modfolder = arg
-print("Input folder is " + valfolder + "/")
 print("Model folder is " + modfolder + "/")
 
-if valfolder[-1] == '/':
-    valfolder = valfolder[:-1]
-
-if not os.path.exists(valfolder+'_denoised'):
-    os.makedirs(valfolder+'_denoised')
 
 # SPEECH ENHANCEMENT NETWORK
 SE_LAYERS = 13 # NUMBER OF INTERNAL LAYERS
@@ -42,10 +34,6 @@ with tf.variable_scope(tf.get_variable_scope()):
     clean=tf.placeholder(tf.float32,shape=[None,1,None,1])
         
     enhanced=senet(input, n_layers=SE_LAYERS, norm_type=SE_NORM, n_channels=SE_CHANNELS)
-
-# LOAD DATA
-valset = load_noisy_data_list(valfolder = valfolder)
-valset = load_noisy_data_librosa(valset)
 
 # BEGIN SCRIPT #########################################################################################################
 
@@ -64,15 +52,33 @@ saver = tf.train.Saver([var for var in tf.trainable_variables() if var.name.star
 saver.restore(sess, "./%s/se_model.ckpt" % modfolder)
 
 #####################################################################################
+# data_root_path = "/trainman-mount/trainman-storage-420a420f-b7a2-4445-abca-0081fc7108ca/daps_SE_results_cuts"
+data_root_path = "/trainman-mount/trainman-storage-420a420f-b7a2-4445-abca-0081fc7108ca/sim_SE_results_cuts"
 
-for id in tqdm(range(0, len(valset["innames"]))):
+env_sel = np.load("/home/code-base/runtime/experiments/helper_notebooks/sim_selections.npy")
 
-    i = id # NON-RANDOMIZED ITERATION INDEX
-    inputData = valset["inaudio"][i] # LOAD DEGRADED INPUT
+sp_envs_results = {}
 
-    # VALIDATION ITERATION
-    output = sess.run([enhanced],
-                        feed_dict={input: inputData})
-    output = np.reshape(output, -1)
-    wavfile.write("%s_denoised/%s" % (valfolder,valset["shortnames"][i]), fs, output)
-
+for (dirpath, dirnames, filenames) in os.walk(data_root_path):
+    if not (dirpath.split("/")[-1]=="Reverb"):
+        continue
+    sp_env = dirpath.split("/")[-2]
+    ref_filename_list = []
+    enhanced_filename_List = []
+    for filename in filenames:
+        if not filename.endswith(".wav"):
+            continue
+        if not filename in env_sel:
+            continue
+        enhanced_path = os.path.join(output_path, modfolder.split("/")[-1], sp_env, "DeepFL-Pre")
+        enhanced_name = os.path.join(output_path, modfolder.split("/")[-1], sp_env, "DeepFL-Pre", filename.replace("Reverb", "DeepFL-Pre"))
+        print(enhanced_name)
+        if not os.path.exists(enhanced_path):
+            os.makedirs(enhanced_path)
+        
+        noisy_wav, _ = librosa.load(os.path.join(dirpath, filename), sr=16000, mono=True)
+        
+        noisy_wav = np.reshape(noisy_wav, (1, 1, noisy_wav.shape[0], 1))
+        output = sess.run([enhanced], feed_dict={input: noisy_wav})
+        output = np.reshape(output, -1)
+        sf.write(enhanced_name, output, 16000)

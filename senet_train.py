@@ -1,5 +1,8 @@
 from model import *
 from data_import import *
+from data_reader import DataGenerator
+from speech_embedding.emb_data_generator import query_joint_yield, CLEAN_DATA_RANGE, CLEAN_TEST_DATA_RANGE
+from speech_embedding.read_Audio_RIRs import read_Audio_RIRs, get_Audio_RIR_classes, read_noise
 
 import sys, getopt
 
@@ -25,14 +28,15 @@ log_file = open("logfile.txt", 'w+')
 datafolder = "dataset"
 modfolder = "models"
 outfolder = "."
+restore_from = "models_sim_320/se_model.ckpt"
 try:
     opts, args = getopt.getopt(sys.argv[1:],"hd:l:o:",["ifolder=,lossfolder=,outfolder="])
 except getopt.GetoptError:
-    print 'Usage: python senet_infer.py -d <datafolder> -l <lossfolder> -o <outfolder>'
+    print('Usage: python senet_infer.py -d <datafolder> -l <lossfolder> -o <outfolder>')
     sys.exit(2)
 for opt, arg in opts:
     if opt == '-h':
-        print 'Usage: python senet_infer.py -d <datafolder> -l <lossfolder> -o <outfolder>'
+        print('Usage: python senet_infer.py -d <datafolder> -l <lossfolder> -o <outfolder>')
         sys.exit()
     elif opt in ("-d", "--datafolder"):
         datafolder = arg
@@ -40,9 +44,10 @@ for opt, arg in opts:
         modfolder = arg
     elif opt in ("-o", "--outfolder"):
         outfolder = arg
-print 'Data folder is "' + datafolder + '/"'
-print 'Loss model folder is "' + modfolder + '/"'
-print 'Output model folder is "' + outfolder + '/"'
+print('Data folder is "' + datafolder + '/"')
+print('Loss model folder is "' + modfolder + '/"')
+print('Restore model from "' + restore_from + '/"')
+print('Output model folder is "' + outfolder + '/"')
 
 # SET LOSS FUNCTIONS AND PLACEHOLDERS
 with tf.variable_scope(tf.get_variable_scope()):
@@ -63,8 +68,171 @@ with tf.variable_scope(tf.get_variable_scope()):
                                  base_channels=LOSS_BASE_CHANNELS, blk_channels=LOSS_BLK_CHANNELS)
 
 # LOAD DATA
-trainset, valset = load_full_data_list(datafolder = datafolder)
-trainset, valset = load_full_data(trainset, valset)
+# trainset, valset = load_full_data_list(datafolder = datafolder)
+# trainset, valset = load_full_data(trainset, valset)
+
+SR = 16000
+IN_MEMORY = 0.0
+DIRECTORY = "/trainman-mount/trainman-storage-dc5e03f8-a08d-49bb-b3a9-4bae92eb4e92"
+REVERB_DIRECTORY = "/trainman-mount/trainman-storage-420a420f-b7a2-4445-abca-0081fc7108ca/Audio-RIRs"
+NOISE_DIRECTORY = "/trainman-mount/trainman-storage-420a420f-b7a2-4445-abca-0081fc7108ca/subnoises"
+VAL_NOISE_DIRECTORY = "/trainman-mount/trainman-storage-420a420f-b7a2-4445-abca-0081fc7108ca/subnoises"
+data_range = CLEAN_DATA_RANGE
+test_data_range = CLEAN_TEST_DATA_RANGE
+
+NO_CLASSES = 200
+SEQ_LEN = 256000
+BATCH_SIZE = 1
+# LEARNING_RATE = config['LEARNING_RATE']
+# path = config['path']
+# dropout = config['dropout'] if "dropout" in config else 0.0
+inject_noise = True  
+use_real_noise = True
+augment_speech = False
+augment_reverb = False
+# augment_noise = False
+extra_subsets = False
+    
+#%% Speech audio files
+train_filenames, train_data_holder = query_joint_yield(
+                                         gender=data_range["gender"], 
+                                         num=data_range["num"], 
+                                         script=data_range["script"],
+                                         device=data_range["device"], 
+                                         scene=data_range["scene"], 
+                                         directory=DIRECTORY, 
+                                         exam_ignored=True, 
+                                         randomized=True,
+                                         sample_rate=SR, 
+                                         in_memory=IN_MEMORY)
+
+test_filenames, test_data_holder = query_joint_yield(
+                                         gender=test_data_range["gender"], 
+                                         num=test_data_range["num"], 
+                                         script=test_data_range["script"],
+                                         device=test_data_range["device"], 
+                                         scene=test_data_range["scene"], 
+                                         directory=DIRECTORY, 
+                                         exam_ignored=True, 
+                                         randomized=True,
+                                         sample_rate=SR,
+                                         in_memory=IN_MEMORY)
+print(test_filenames)
+
+if extra_subsets:
+    unseen_speaker_test_filenames, _ = query_joint_yield(
+                                         gender=test_data_range["gender"], 
+                                         num=test_data_range["num"], 
+                                         script=data_range["script"],
+                                         device=test_data_range["device"], 
+                                         scene=test_data_range["scene"], 
+                                         directory=DIRECTORY, 
+                                         exam_ignored=True, 
+                                         randomized=True,
+                                         sample_rate=SR,
+                                         in_memory=IN_MEMORY)
+
+    unseen_script_test_filenames, _ = query_joint_yield(
+                                         gender=data_range["gender"], 
+                                         num=data_range["num"], 
+                                         script=test_data_range["script"],
+                                         device=test_data_range["device"], 
+                                         scene=test_data_range["scene"], 
+                                         directory=DIRECTORY, 
+                                         exam_ignored=True, 
+                                         randomized=True,
+                                         sample_rate=SR,
+                                         in_memory=IN_MEMORY)
+
+#%% Reverb audio files
+# 1-250 Train
+# 251-271 Test
+# 233 is missing
+reverb_train_filenames, reverb_train_data_holder=read_Audio_RIRs(sr=SR, 
+                                                                 subset="train", 
+                                                                 cutoff=NO_CLASSES, 
+                                                                 root=REVERB_DIRECTORY)
+reverb_test_filenames, reverb_test_data_holder=read_Audio_RIRs(sr=SR, 
+                                                               subset="test", 
+                                                               cutoff=NO_CLASSES, 
+                                                               root=REVERB_DIRECTORY)
+
+print(len(reverb_train_filenames), len(reverb_test_filenames))
+
+#%% Target classes
+class_dict, classes, class_back_dict = get_Audio_RIR_classes(REVERB_DIRECTORY, 271)
+
+### Prepare Noise
+if use_real_noise:
+    noise_filenames, _ = read_noise(sr=SR, root=NOISE_DIRECTORY, preload=False)
+#         print(noise_filenames)
+    val_noise_filenames, _ = read_noise(sr=SR, root=VAL_NOISE_DIRECTORY, preload=False)
+#     print(val_noise_filenames)
+else:
+    noise_filenames = None
+    val_noise_filenames = None
+    
+train_set_generator = DataGenerator(train_filenames, reverb_train_filenames, noise_filenames=noise_filenames,
+                                speech_data_holder=None, 
+                                reverb_data_holder=None,
+                                noise_data_holder=None,
+                                sample_rate=SR, 
+                                seq_len=SEQ_LEN, 
+                                num_classes=NO_CLASSES,
+                                shuffle=True, batch_size=BATCH_SIZE,
+                                in_memory=1.0, 
+                                augment_speech=augment_speech, inject_noise=inject_noise, augment_reverb=augment_reverb)
+
+val_set_generator = DataGenerator(test_filenames, reverb_train_filenames, noise_filenames=val_noise_filenames,
+                                speech_data_holder=None, 
+                                reverb_data_holder=None,
+                                noise_data_holder=None,
+                                sample_rate=SR, 
+                                seq_len=SEQ_LEN, 
+                                num_classes=NO_CLASSES,
+                                shuffle=True, batch_size=BATCH_SIZE,
+                                in_memory=1.0, 
+                                augment_speech=augment_speech, inject_noise=inject_noise, augment_reverb=augment_reverb)
+
+if extra_subsets:
+    val_unseen_speaker_set_generator = DataGenerator(unseen_speaker_test_filenames, reverb_train_filenames, 
+                                    noise_filenames=val_noise_filenames,
+                                    speech_data_holder=None, 
+                                    reverb_data_holder=None,
+                                    noise_data_holder=None,
+                                    sample_rate=SR, 
+                                    seq_len=SEQ_LEN, 
+                                    num_classes=NO_CLASSES,
+                                    shuffle=True, batch_size=BATCH_SIZE,
+                                    in_memory=1.0, 
+                                    augment_speech=augment_speech, inject_noise=inject_noise, augment_reverb=augment_reverb)
+
+    val_unseen_script_set_generator = DataGenerator(unseen_script_test_filenames, reverb_train_filenames, 
+                                    noise_filenames=val_noise_filenames,
+                                    speech_data_holder=None, 
+                                    reverb_data_holder=None,
+                                    noise_data_holder=None,
+                                    sample_rate=SR, 
+                                    seq_len=SEQ_LEN, 
+                                    num_classes=NO_CLASSES,
+                                    shuffle=True, batch_size=BATCH_SIZE,
+                                    in_memory=1.0, 
+                                    augment_speech=augment_speech, inject_noise=inject_noise, augment_reverb=augment_reverb)
+
+test_set_generator = DataGenerator(test_filenames, reverb_test_filenames, noise_filenames=val_noise_filenames,
+                                    speech_data_holder=None, 
+                                    reverb_data_holder=None,
+                                    noise_data_holder=None,
+                                    sample_rate=SR, 
+                                    seq_len=SEQ_LEN, 
+                                    num_classes=NO_CLASSES,
+                                    shuffle=True, batch_size=BATCH_SIZE,
+                                    in_memory=1.0, 
+                                    augment_speech=augment_speech, inject_noise=inject_noise, augment_reverb=augment_reverb)
+
+train_iter = train_set_generator.__iter__()
+val_iter = val_set_generator.__iter__()
+test_iter = test_set_generator.__iter__()
 
 # TRAINING OPTIMIZER
 opt=tf.train.AdamOptimizer(learning_rate=1e-4).\
@@ -77,28 +245,33 @@ config=tf.ConfigProto()
 config.gpu_options.allow_growth=True
 sess=tf.Session(config=config)
 
-print "Config ready"
+print("Config ready")
 
 sess.run(tf.global_variables_initializer())
 
-print "Session initialized"
+print("Session initialized")
 
 # LOAD FEATURE LOSS
 if SE_LOSS_TYPE == "FL":
     loss_saver = tf.train.Saver([var for var in tf.trainable_variables() if var.name.startswith("loss_")])
     loss_saver.restore(sess, "./%s/loss_model.ckpt" % modfolder)
 
-Nepochs = 320
+Nepochs = 500
 saver = tf.train.Saver([var for var in tf.trainable_variables() if var.name.startswith("se_")])
+
+if restore_from is not None:
+    saver.restore(sess, restore_from)
 
 ########################################################################################################################
 
 if SE_LOSS_TYPE == "FL":
-    loss_train = np.zeros((len(trainset["innames"]),SE_LOSS_LAYERS+1))
-    loss_val = np.zeros((len(valset["innames"]),SE_LOSS_LAYERS+1))
+    loss_train = np.zeros((train_set_generator.__len__(),SE_LOSS_LAYERS+1))
+    loss_val = np.zeros((val_set_generator.__len__(),SE_LOSS_LAYERS+1))
+    loss_test = np.zeros((test_set_generator.__len__(),SE_LOSS_LAYERS+1))
 else:
-    loss_train = np.zeros((len(trainset["innames"]),1))
-    loss_val = np.zeros((len(valset["innames"]),1))
+    loss_train = np.zeros((train_set_generator.__len__(),1))
+    loss_val = np.zeros((val_set_generator.__len__(),1))
+    loss_test = np.zeros((test_set_generator.__len__(),1))
     
 if SE_LOSS_TYPE == "FL":
     loss_w = np.ones(SE_LOSS_LAYERS)
@@ -112,14 +285,14 @@ for epoch in range(1,Nepochs+1):
     print("Epoch no.%d"%epoch)
     # TRAINING EPOCH ################################################################
 
-    ids = np.random.permutation(len(trainset["innames"])) # RANDOM FILE ORDER
+#     ids = np.random.permutation(len(trainset["innames"])) # RANDOM FILE ORDER
 
-    for id in tqdm(range(0, len(ids)), file=sys.stdout):
-
-        i = ids[id] # RANDOMIZED ITERATION INDEX
-        inputData = trainset["inaudio"][i] # LOAD DEGRADED INPUT
-        outputData = trainset["outaudio"][i] # LOAD GROUND TRUTH
-
+    for id in tqdm(range(0, train_set_generator.__len__()), file=sys.stdout):
+        inputData, outputData = next(train_iter)
+#         i = ids[id] # RANDOMIZED ITERATION INDEX
+#         inputData = trainset["inaudio"][i] # LOAD DEGRADED INPUT
+#         outputData = trainset["outaudio"][i] # LOAD GROUND TRUTH
+            
         # TRAINING ITERATION
         _, loss_vec = sess.run([opt, loss_fn],
                                 feed_dict={input: inputData, clean: outputData, loss_weights: loss_w})
@@ -154,13 +327,9 @@ for epoch in range(1,Nepochs+1):
     # VALIDATION EPOCH ##############################################################
 
     print("Validation epoch")
-
-    for id in tqdm(range(0, len(valset["innames"])), file=sys.stdout):
-
-        i = id # NON-RANDOMIZED ITERATION INDEX
-        inputData = valset["inaudio"][i] # LOAD DEGRADED INPUT
-        outputData = valset["outaudio"][i] # LOAD GROUND TRUTH
-
+    for id in tqdm(range(0, val_set_generator.__len__()), file=sys.stdout):
+        inputData, outputData = next(val_iter)
+        
         # VALIDATION ITERATION
         output, loss_vec = sess.run([enhanced, loss_fn],
                             feed_dict={input: inputData, clean: outputData, loss_weights: loss_w})
@@ -181,5 +350,33 @@ for epoch in range(1,Nepochs+1):
 
     log_file.write(str + "\n")
     log_file.flush()
+    
+    # TEST EPOCH ##############################################################
+
+    print("Test epoch")
+    for id in tqdm(range(0, test_set_generator.__len__()), file=sys.stdout):
+        inputData, outputData = next(test_iter)
+        
+        # VALIDATION ITERATION
+        output, loss_vec = sess.run([enhanced, loss_fn],
+                            feed_dict={input: inputData, clean: outputData, loss_weights: loss_w})
+
+        # SAVE ITERATION LOSS
+        loss_test[id,0] = loss_vec[0]
+        if SE_LOSS_TYPE == "FL":
+            for j in range(SE_LOSS_LAYERS):
+                loss_test[id,j+1] = loss_vec[j+1]
+
+    # PRINT VALIDATION EPOCH LOSS AVERAGE
+    str = "E: %d " % (epoch)
+    if SE_LOSS_TYPE == "FL":
+        for j in range(SE_LOSS_LAYERS+1):
+            str += ", %10.6e"%(np.mean(loss_test, axis=0)[j]*1e9)
+    else:
+        str += ", %10.6e"%(np.mean(loss_test, axis=0)[0]*1e9)
+
+    log_file.write(str + "\n")
+    log_file.flush()
+    np.save("loss_w.npy", loss_w)
 
 log_file.close()
